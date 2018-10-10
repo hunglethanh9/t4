@@ -1,11 +1,12 @@
 import hljs from 'highlight.js';
 import flow from 'lodash/flow';
+import id from 'lodash/identity';
 import memoize from 'lodash/memoize';
 import PT from 'prop-types';
 import React from 'react';
 import { setPropTypes } from 'recompose';
 import Remarkable from 'remarkable';
-import { replaceEntities, escapeHtml } from 'remarkable/lib/common/utils';
+import { replaceEntities, escapeHtml, unescapeMd } from 'remarkable/lib/common/utils';
 import styled from 'styled-components';
 
 import { composeComponent } from 'utils/reactTools';
@@ -36,18 +37,34 @@ const highlight = (str, lang) => {
 const escape = flow(replaceEntities, escapeHtml);
 
 /**
- * Plugin for remarkable that disables image rendering.
+ * Create a plugin for remarkable that does custom processing of image tags.
  *
- * @param {Object} md Remarkable instance
+ * @param {Object} options
+ * @param {bool} disable
+ *   Don't show images, render them as they are in markdown contents (escaped).
+ * @param {function} process
+ *   Function that takes an image object ({ alt, src, title }) and returns a
+ *   (possibly modified) image object.
  */
-const disableImg = (md) => {
+const imageHandler = ({
+  disable = false,
+  process = id,
+}) => (md) => {
   // eslint-disable-next-line no-param-reassign
   md.renderer.rules.image = (tokens, idx) => {
-    const t = tokens[idx];
-    const src = escape(t.src);
-    const title = t.title ? ` "${escape(t.title)}"` : '';
-    const alt = t.alt ? escape(t.alt) : '';
-    return `<span>![${alt}](${src}${title})</span>`;
+    const t = process(tokens[idx]);
+
+    if (disable) {
+      const alt = t.alt ? escape(t.alt) : '';
+      const src = escape(t.src);
+      const title = t.title ? ` "${escape(t.title)}"` : '';
+      return `<span>![${alt}](${src}${title})</span>`;
+    }
+
+    const src = escapeHtml(t.src);
+    const alt = t.alt ? escape(unescapeMd(t.alt)) : '';
+    const title = t.title ? ` title="${escape(t.title)}"` : '';
+    return `<img src="${src}" alt="${alt}"${title} />`;
   };
 };
 
@@ -63,6 +80,8 @@ const adjustLinks = (md) => {
   md.renderer.rules.link_open = (tokens, idx) => {
     const t = tokens[idx];
     const title = t.title ? ` title="${escape(t.title)}"` : '';
+    // TODO: sign
+    // console.log('link', t.href);
     return `<a href="${escapeHtml(t.href)}" rel="nofollow"${title}>`;
   };
 };
@@ -77,7 +96,10 @@ const adjustLinks = (md) => {
  *
  * @returns {Object} Remarakable instance
  */
-const getRenderer = memoize(({ images }) => {
+const getRenderer = memoize(({
+  images,
+  processImg,
+}) => {
   const md = new Remarkable('full', {
     highlight,
     html: false,
@@ -85,7 +107,10 @@ const getRenderer = memoize(({ images }) => {
     typographer: true,
   });
   md.use(adjustLinks);
-  if (!images) md.use(disableImg);
+  md.use(imageHandler({
+    disable: !images,
+    process: processImg,
+  }));
   return md;
 });
 
@@ -110,14 +135,25 @@ export default composeComponent('Markdown',
     data: PT.string,
     className: PT.string,
     images: PT.bool,
+    processImg: PT.func,
+
   }),
-  ({ data, className = '', images = true }) => (
+  ({
+    data,
+    className = '',
+    images = true,
+    processImg,
+  }) => (
     <Style
       className={`markdown ${className}`}
       dangerouslySetInnerHTML={{
         // would prefer to render in a saga but md.render() fails when called
         // in a generator
-        __html: getRenderer({ images }).render(data),
+        __html:
+          getRenderer({
+            images,
+            processImg,
+          }).render(data),
       }}
     />
   ));
